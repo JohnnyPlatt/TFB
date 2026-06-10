@@ -700,6 +700,74 @@ function mkPlayer(persona,isHuman,sharedDeck,sharedDiscard){
   };
 }
 
+// --- DEBUG LOGGER ---
+const _debugLog = [];
+let _debugTurn = 0;
+let _debugSeq = 0;
+
+function dbg(category, event, detail, state) {
+  _debugSeq++;
+  _debugLog.push({
+    seq: _debugSeq,
+    turn: _debugTurn,
+    ts: new Date().toISOString(),
+    category,   // ATTACK | PARRY | PUSH | PHASE | PERSONA | DAMAGE | DRAW | REMISE | RIPOSTE | CALLED_SHOT | ERROR
+    event,      // short label e.g. "attack_resolved"
+    detail,     // human-readable string
+    state: state ? JSON.stringify(state) : null,
+  });
+}
+
+function dbgState(player, ai, phase, extra) {
+  return {
+    phase,
+    playerBravado: player.bravado,
+    playerPos: player.position,
+    playerHandSize: player.hand.length,
+    playerPersona: player.persona.id,
+    aiBravado: ai.bravado,
+    aiPos: ai.position,
+    aiHandSize: ai.hand.length,
+    aiPersona: ai.persona.id,
+    ...(extra || {}),
+  };
+}
+
+function exportDebugLog() {
+  const lines = [
+    "THE FLASHING BLADE — DEBUG LOG",
+    "Generated: " + new Date().toISOString(),
+    "=".repeat(80),
+    "",
+  ];
+  let lastTurn = -1;
+  _debugLog.forEach(e => {
+    if (e.turn !== lastTurn) {
+      lines.push("");
+      lines.push("--- TURN " + e.turn + " ---");
+      lastTurn = e.turn;
+    }
+    const stateStr = e.state ? " | STATE: " + e.state : "";
+    lines.push("[" + e.seq.toString().padStart(4,"0") + "] [" + e.category.padEnd(12) + "] " + e.event.padEnd(30) + " " + e.detail + stateStr);
+  });
+  lines.push("");
+  lines.push("=".repeat(80));
+  lines.push("END OF LOG — " + _debugLog.length + " entries");
+  return lines.join("
+");
+}
+
+function downloadDebugLog() {
+  const text = exportDebugLog();
+  const blob = new Blob([text], {type: "text/plain"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "flashing-blade-debug-" + Date.now() + ".txt";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // --- MAIN GAME ---
 function Game({playerPersona}){
   const aiPersona=PERSONAS.find(p=>p.id!==playerPersona.id)||PERSONAS[1];
@@ -823,6 +891,7 @@ function Game({playerPersona}){
 
   // Reset per-turn state
   function resetTurnState() {
+    _debugTurn++;
     setHitsThisTurn(0);
     setRemiseCards([]);
     setRemiseSuit(null);
@@ -974,6 +1043,7 @@ function Game({playerPersona}){
         // Parry succeeded
         const margin = parryCard.defence - pendingAtk.attack;
         addLog("Parried with " + parryCard.name + " (DEF " + parryCard.defence + " vs ATK " + pendingAtk.attack + ")", "parry");
+        dbg("PARRY", "player_parry_success", "card=" + parryCard.name + " def=" + parryCard.defence + " atk=" + pendingAtk.attack + " margin=" + (parryCard.defence - pendingAtk.attack), dbgState(player, ai, phase));
         setConsecutiveDefences(c => c + 1);
         // Pirate Queen disadvantage: discard 1 random if defending twice in a row
         if ((PERSONA_RULES[player.persona.id]||{}).consecutiveDefenceDiscard && consecutiveDefences >= 1) {
@@ -1118,6 +1188,7 @@ function Game({playerPersona}){
       a = {...a, hand: a.hand.filter(c => c.uid !== card.uid), discard: [...a.discard, card]};
       const zoneLabel = card.declaredZone ? card.zone + " (Wild declared " + card.zone + ")" : card.zone;
       addLog(a.persona.name + " attacks with " + card.name + " [" + zoneLabel + " ATK " + card.attack + "]");
+      dbg("ATTACK", "ai_attack", "card=" + card.name + " zone=" + card.zone + " atk=" + card.attack + " suit=" + card.suit + (card.declaredZone ? " declared=" + card.declaredZone : ""), dbgState(player, a, "ai_turn"));
       if (card.flavour) showFlavour(card.flavour);
       // If persona card — show panel to player before they must parry
       if (card.type === "Persona") {
@@ -1200,6 +1271,7 @@ function Game({playerPersona}){
       } else {
         if (effectiveAtk !== card.attack) addLog("  " + player.persona.name + " bonus: ATK " + card.attack + " -> " + effectiveAtk, "gold");
         addLog("You attack with " + card.name + " [" + card.zone + " ATK " + effectiveAtk + "]");
+        dbg("ATTACK", "player_attack", "card=" + card.name + " zone=" + card.zone + " atk=" + effectiveAtk + " suit=" + card.suit, dbgState(p, a, phase));
       }
       // Track for remise constraints
       setRemiseSuit(card.suit);
@@ -1217,6 +1289,7 @@ function Game({playerPersona}){
         if (zoneOk && defOk) {
           const margin = aiCard.defence - card.attack;
           addLog(a.persona.name + " parries with " + aiCard.name + " (DEF " + aiCard.defence + ")", "parry");
+          dbg("PARRY", "ai_parry_success", "card=" + aiCard.name + " def=" + aiCard.defence + " atk=" + attackCard.attack + " margin=" + (aiCard.defence - attackCard.attack), dbgState(p, a, phase));
           if (margin >= 2) {
             // AI takes best margin option: gain Bravado
             a = {...a, bravado: Math.min(a.bravado + 1, a.persona.startBravado)};
@@ -1227,13 +1300,17 @@ function Game({playerPersona}){
           const atkMargin = attackCard.attack - aiCard.defence;
           if (!zoneOk) {
             addLog(a.persona.name + " zone mismatch — attack lands! -1 Bravado.", "hit");
+            dbg("PARRY", "ai_parry_fail_zone", "attackZone=" + attackCard.zone + " parryZone=" + aiCard.zone + " ai_bravado=" + (a.bravado-1), dbgState(p, a, phase));
           } else {
             addLog(a.persona.name + " parry failed (DEF " + aiCard.defence + " < ATK " + card.attack + ") — -1 Bravado.", "hit");
+            dbg("PARRY", "ai_parry_fail_def", "def=" + aiCard.defence + " atk=" + attackCard.attack + " shortfall=" + (attackCard.attack - aiCard.defence), dbgState(p, a, phase));
           }
           a = {...a, bravado: a.bravado - 1};
+          dbg("DAMAGE", "attack_damage", "target=ai bravado_after=" + (a.bravado) + " source=failed_parry", null);
           if (atkMargin >= 2 && zoneOk) {
             addLog("  Margin +" + atkMargin + " — extra Bravado lost!", "hit");
             a = {...a, bravado: a.bravado - 1};
+            dbg("DAMAGE", "margin_bonus_damage", "margin=" + atkMargin + " target=ai bravado_after=" + (a.bravado), null);
           }
           if (calledShotActive) {
             a = {...a, bravado: a.bravado - 1};
@@ -1351,6 +1428,7 @@ function Game({playerPersona}){
         // For now we derive from selected (already null) so we pass via a temp approach:
         // Actually we set remiseSuit/Zone when attack lands; see below
         addLog("Two hits this turn — REMISE UNLOCKED! Chain up to 2 cards (same suit & zone as last attack).", "gold");
+        dbg("PHASE", "remise_unlocked", "hits=" + newHits + " suit=" + remiseSuit + " zone=" + remiseZone, null);
         setPhase("player_remise");
       } else {
         setPhase("ai_turn");
@@ -1513,6 +1591,7 @@ function Game({playerPersona}){
     }
     addLog("Remise complete — " + chain.length + " card" + (chain.length !== 1 ? "s" : "") +
       " chained" + (push > 0 ? ", Push " + push : "") + ".", "gold");
+    dbg("REMISE", "remise_complete", "chain=" + chain.map(c=>c.name).join("+") + " push=" + push + " brutalCount=" + chain.filter(c=>c.suit==="Brutal").length, dbgState(p, a, "remise"));
 
     if (push > 0) {
       const pushed = applyPush(push, p, a, "Push " + push);
@@ -1951,8 +2030,17 @@ function Game({playerPersona}){
       {/* Combat log */}
       <Log entries={log}/>
 
-      <div style={{marginTop:8,fontSize:8,color:"#2A1A08",textAlign:"center",fontStyle:"italic"}}>
-        Location Draft · Riposte choice UI · Object cards — coming in next build
+      <div style={{marginTop:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div style={{fontSize:8,color:"#2A1A08",fontStyle:"italic"}}>
+          Location Draft · Riposte choice UI · Object cards — coming in next build
+        </div>
+        <button onClick={downloadDebugLog} style={{
+          background:"#0E0806",border:"1px solid #2A1A08",color:"#3A2510",
+          padding:"3px 8px",borderRadius:3,cursor:"pointer",fontSize:8,
+          fontFamily:"monospace",letterSpacing:1,
+        }} title="Export debug log for bug reporting">
+          [Export Debug Log]
+        </button>
       </div>
     </div>
     <CardEventPanel event={cardEvent} onDone={()=>setCardEvent(null)}/>
